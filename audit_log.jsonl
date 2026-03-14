@@ -1,0 +1,1 @@
+{"session_id": "demo-session", "total_cost_usd": 1e-06, "events": [{"timestamp": "2026-03-14T11:02:05.544606", "agent": "supervisor", "action": "handoff: HANDOFF FROM SUPERVISOR TO ORDERS:\nTask: My order ORD-123 is late, can I return it?\nPriority: normal\nContext: {'route_guess': 'orders'}\nReceived at: 2026-03-14T11:02:05.544606", "cost_usd": 1e-06}]}

@@ -1,4 +1,5 @@
-from typing import TypedDict, Literal
+import re
+from typing import Final, TypedDict, Literal
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage, HumanMessage
 from dataclasses import dataclass, field
@@ -41,7 +42,7 @@ def load_prompt() -> str:
         raise ValueError(f"Prompt not found: {PROMPT_PATH}")
 
     with open(PROMPT_PATH, "r", encoding="utf-8") as f:
-        data = yaml.safe_load()
+        data = yaml.safe_load(f)
     return data["system"].strip()
 
 
@@ -127,6 +128,92 @@ def synthesize_response_node(state: MultiAgentState) -> dict:
 
 
 # ------------------------------------------------------------
+#  Structured Handoff Dataclass
+# ------------------------------------------------------------
+@dataclass
+class AgentHandoff:
+    from_agent: str
+    to_agent: str
+    task: str
+    context: dict
+    priority: str  # "low" | "normal" | "high"
+    timestamp: str
+
+    def to_prompt_context(self) -> str:
+        return (
+            f"HANDOFF FROM {self.from_agent.upper()} TO {self.to_agent.upper()}:\n"
+            f"Task: {self.task}\n"
+            f"Priority: {self.priority}\n"
+            f"Context: {self.context}\n"
+            f"Received at: {self.timestamp}"
+        )
+
+
+# ------------------------------------------------------------
+# Prompt Injection Detection
+# ------------------------------------------------------------
+INJECTION_PATTERNS: Final[list[str]] = [
+    r"ignore.*instructions",
+    r"system prompt.*disabled",
+    r"you are now a",
+    r"repeat.*system prompt",
+    r"jailbreak",
+]
+
+
+def detect_injection(user_input: str) -> bool:
+    text = user_input.lower()
+    for pattern in INJECTION_PATTERNS:
+        if re.search(pattern, text):
+            return True
+    return False
+
+
+def guard_request(user_input: str) -> str:
+    if detect_injection(user_input):
+        return "I can only assist with account and order support. (Request blocked.)"
+    return user_input
+
+
+# ------------------------------------------------------------
+# Session Audit Log with Cost Tracking
+# ------------------------------------------------------------
+@dataclass
+class SessionAuditLog:
+    session_id: str
+    events: list[dict] = field(default_factory=list)
+    total_cost_usd: float = 0.0
+
+    def log(
+        self, agent: str, action: str, tokens_in: int = 0, tokens_out: int = 0
+    ) -> None:
+        # mock cost calculation (per token, dividing by 1000 because pricing is per 1k)
+        cost = (tokens_in * 0.000015 + tokens_out * 0.00006) / 1000
+        self.total_cost_usd += cost
+        self.events.append(
+            {
+                "timestamp": datetime.utcnow().isoformat(),
+                "agent": agent,
+                "action": action,
+                "cost_usd": round(cost, 6),
+            }
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "total_cost_usd": round(self.total_cost_usd, 6),
+            "events": self.events,
+        }
+
+
+def persist_audit_log(audit: SessionAuditLog) -> None:
+    path = Path("audit_log.jsonl")
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(audit.to_dict()) + "\n")
+
+
+# ------------------------------------------------------------
 #   Build the Multi‑Agent Graph
 # ------------------------------------------------------------
 def build_graph():
@@ -164,17 +251,38 @@ def build_graph():
 # ------------------------------------------------------------
 #   MAIN DEMONSTRATION
 # ------------------------------------------------------------
-
-
 def main() -> None:
+    # Load YAML (already done SUPERVISOR_SYSTEM_PROMPT)
+    # Create audit log
     audit = SessionAuditLog(session_id="demo-session")
+
+    # Build graph
     graph = build_graph()
 
-    for request in [
-        "My order ORD-123 is late, can I return it?",
-        "I want to upgrade from Basic to Pro. What will it cost?",
-    ]:
+    for counter, request in enumerate(
+        [
+            "My order ORD-123 is late, can I return it?",
+            "I want to upgrade from Basic to Pro. What will it cost?",
+        ]
+    ):
         safe_text = guard_request(request)
+
+        if counter == 0:
+            handoff = AgentHandoff(
+                from_agent="supervisor",
+                to_agent="orders" if "order" in request.lower() else "general",
+                task=request,
+                context={"route_guess": "orders"},
+                priority="normal",
+                timestamp=datetime.utcnow().isoformat(),
+            )
+            audit.log(
+                "supervisor",
+                f"handoff: {handoff.to_prompt_context()}",
+                tokens_in=50,
+                tokens_out=10,
+            )
+
         state: MultiAgentState = {
             "user_request": safe_text,
             "route": "general",
@@ -186,7 +294,7 @@ def main() -> None:
         print("Request:", request)
         print("Route:", result.get("route"), "Agent used:", result.get("agent_used"))
         print("Final:", result.get("final_response"))
-        print("---")
+        print("---"*50)
 
     print("Total cost (USD):", round(audit.total_cost_usd, 6))
     persist_audit_log(audit)
