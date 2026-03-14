@@ -142,6 +142,24 @@ def build_graph():
 
     workflow.set_entry_point("supervisor_node")
 
+    workflow.add_conditional_edges(
+        "supervisor_node",
+        route_to_specialist,
+    )
+
+    for specialist in [
+        "orders_agent_node",
+        "billing_agent_node",
+        "technical_agent_node",
+        "subscription_agent_node",
+        "general_agent_node",
+    ]:
+        workflow.add_edge(specialist, "synthesize_response")
+
+    workflow.add_edge("synthesize_response", END)
+
+    return workflow.compile()
+
 
 # ------------------------------------------------------------
 #   MAIN DEMONSTRATION
